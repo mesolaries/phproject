@@ -1,0 +1,163 @@
+#!/bin/bash
+
+usage="Usage: $(basename "$0") [-h]... {COMMAND}... SITENAME 
+
+A script to create and configure a virtual hosted Apache PHP projects in Ubuntu based systems
+
+Example: phproject start development.loc
+
+    -h      Show this help text
+    {-d  Set project directory (default: ~/Projects/PHP/)}
+
+Commands:
+    start SITENAME      Starts a new project (site) with given name
+    remove SITENAME     Removes specified project (site)
+    list                Lists all sites you've created
+    status              Show status of your sites (enabled | disabled)
+    enable SITENAME     Enable specified site
+    disable SITENAME    Disable specified site
+    " 
+
+
+# sitedir=~/Projects/PHP/
+while getopts ':hd:' option; do
+  case "$option" in
+    h) echo "$usage"
+       exit
+       ;;
+    # d) sitedir=$OPTARG
+    #    ;;
+    # :) printf "missing argument for -%s\n" "$OPTARG" >&2
+    #    echo "$usage" >&2
+    #    exit 1
+    #    ;;
+   \?) printf "illegal option: -%s\n" "$OPTARG" >&2
+       echo "$usage" >&2
+       exit 1
+       ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+
+[ "$UID" -eq 0 ] || exec sudo "$0" "$@"
+
+
+
+conf_example="<Directory /home/{username}/Projects/PHP/{hostname}>
+    Options Indexes FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<VirtualHost *:80>
+    ServerName {hostname}
+    ServerAlias www.{hostname}
+    ServerAdmin webmaster@{hostname}
+    DocumentRoot /home/{username}/Projects/PHP/{hostname}
+
+    ErrorLog ${APACHE_LOG_DIR}/{hostname}.error.log
+    CustomLog ${APACHE_LOG_DIR}/{hostname}.access.log combined
+
+</VirtualHost>
+
+# vim: syntax=apache ts=4 sw=4 sts=4 sr noet"
+
+
+
+
+if [[ ($1 == "start" || $1 == "remove" || $1 == "enable" || $1 == "disable") && -z "$2" ]]; then
+        echo "Second parameter must be set."
+        echo "$usage"
+        exit
+fi
+
+if [[ $1 == "start" ]]; then
+    echo "Creating $2 directory under ~/Projects/PHP/"
+    if [ -d "$HOME/Projects/PHP/$2" ]; then
+        echo "Directory is already exists."
+    else
+        mkdir ~/Projects/PHP/$2
+        touch ~/Projects/PHP/$2/index.php
+        echo "<?php echo 'Hello, World!'; ?>" > ~/Projects/PHP/$2/index.php
+        chown -R $SUDO_USER:$SUDO_USER ~/Projects/PHP/$2    
+    fi
+    
+    echo "Setting up apache configuration for $2..."
+    cd /etc/apache2/sites-available
+    if [ ! -e "/etc/apache2/sites-available/local.conf.example" ]; then
+        touch local.conf.example
+        echo "$conf_example" > local.conf.example
+    fi
+    sed -e "s/{hostname}/$2/g; s/{username}/$SUDO_USER/g" local.conf.example > phproject-$2.conf
+    a2ensite -q phproject-$2.conf | sed 's/phproject-//g'
+    echo "Reloading Apache Server..."
+    systemctl reload apache2
+
+    echo "Adding host to /etc/hosts"
+    if ! grep -Gwq $2$ /etc/hosts; then
+        echo "127.0.0.1     $2" >> /etc/hosts
+    else
+        echo "Localhost $2 already exists."
+    fi
+    echo "Done."
+    echo "Your site is now available at http://$2/"
+
+elif [[ $1 == "remove" ]]; then
+    # echo "Removing $2 directory..."
+    # rm -rf ~/Projects/PHP/$2
+    if [ ! -e "/etc/apache2/sites-available/phproject-$2.conf" ]; then
+        echo "Site $2 does not exist!"
+        exit
+    fi
+    echo "Cleaning up apache configuration for $2..."
+    cd /etc/apache2/sites-available
+    a2dissite -q phproject-$2 | sed 's/phproject-//g'
+    rm -rf "phproject-$2.conf"
+    echo "Reloading Apache Server..."
+    systemctl reload apache2
+    echo "Removing host from /etc/hosts"
+    if [[ $2 != 'localhost' ]]; then
+        sed -i "/$2/d" /etc/hosts
+    fi
+    echo "Done."
+
+elif [[ $1 == "list" ]]; then
+    site_count=$(ls /etc/apache2/sites-available -p | grep -v / | grep '^phproject-' | wc -l)
+    plural=''
+    if [[ $site_count>1 ]]; then
+        plural='s'
+    fi
+    echo "You've $site_count site$plural available:"
+    ls /etc/apache2/sites-available -p | grep -v  / | grep '^phproject-' | sed -e 's/^phproject-//' -e 's/\.conf$//'
+
+elif [[ $1 == "status" ]]; then
+    cd /etc/apache2/sites-available
+    for s in phproject-*.conf; do
+        if [[ -e "/etc/apache2/sites-enabled/$s" ]]; then
+            echo "$s" | sed -e 's/^phproject-//' -e 's/\.conf$/             enabled/'
+        else
+            echo "$s" | sed -e 's/^phproject-//' -e 's/\.conf$/             disabled/'
+        fi
+    done
+
+elif [[ $1 == "enable" ]]; then
+    if [ ! -e "/etc/apache2/sites-available/phproject-$2.conf" ]; then
+        echo "Site $2 does not exist!"
+        exit
+    fi
+    a2ensite -q phproject-$2 | sed 's/phproject-//g'
+    systemctl reload apache2
+    echo "Your site is available now at http://$2/"
+
+elif [[ $1 == "disable" ]]; then
+    if [ ! -e "/etc/apache2/sites-available/phproject-$2.conf" ]; then
+        echo "Site $2 does not exist!"
+        exit
+    fi
+    a2dissite -q phproject-$2 | sed 's/phproject-//g'
+    systemctl reload apache2
+
+else
+    echo "$usage"
+fi
